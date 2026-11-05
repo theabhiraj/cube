@@ -1,16 +1,26 @@
-/* Cube 3D – a physical-feeling Rubik's Cube built with CSS 3D transforms.
+/* Cube 3D – a physical-feeling Rubik's Cube (2x2 to 5x5) built with CSS 3D transforms.
  *
  * Coordinates are CSS coordinates: x → right, y → down, z → toward the viewer.
- * Every cubie keeps an integer position (-1..1 per axis) and an integer 3x3
- * orientation matrix, so moves are exact and never drift.
+ * Every cubie keeps an integer position and an integer 3x3 orientation matrix, so
+ * moves are exact and never drift. Positions use DOUBLED coordinates so even sizes
+ * work: for N=3 the values are -2,0,2; for N=4 they are -3,-1,1,3.
+ *
  * A move is {axis, layer, q}: turn the slice where pos[axis] === layer by q
  * quarter-turns about +axis (positive = the CSS rotate3d direction).
+ *
+ * The camera is a free trackball (a full 3x3 rotation matrix) so the cube can be
+ * spun any number of turns in any direction.
  */
 (() => {
   'use strict';
 
   const $ = (s, r = document) => r.querySelector(s);
   const DEG = Math.PI / 180;
+
+  const KEY = {
+    state: 'cube3d.state.v2', speed: 'cube3d.speed', sound: 'cube3d.sound',
+    palette: 'cube3d.palette', labels: 'cube3d.labels', size: 'cube3d.size', best: 'cube3d.best.',
+  };
 
   /* ---------------------------------------------------------------- data */
 
@@ -24,36 +34,77 @@
     { id: 'L', n: [-1, 0, 0] },
   ];
 
-  // Clockwise (seen from outside the face) = +90° about the outward normal.
-  const MOVES = {
-    U: { axis: 1, layer: -1, q: -1 },
-    D: { axis: 1, layer: 1, q: 1 },
-    R: { axis: 0, layer: 1, q: 1 },
-    L: { axis: 0, layer: -1, q: -1 },
-    F: { axis: 2, layer: 1, q: 1 },
-    B: { axis: 2, layer: -1, q: -1 },
-    M: { axis: 0, layer: 0, q: -1 }, // follows L
-    E: { axis: 1, layer: 0, q: 1 },  // follows D
-    S: { axis: 2, layer: 0, q: 1 },  // follows F
+  const PALETTES = {
+    classic: { white: '#f4f4f2', yellow: '#ffd300', green: '#00a14b', blue: '#0051ba', red: '#c41e3a', orange: '#ff5800' },
+    access:  { white: '#ffffff', yellow: '#f0e442', green: '#009e73', blue: '#0072b2', red: '#d55e00', orange: '#e69f00' },
+    soft:    { white: '#fbfbfb', yellow: '#ffe28a', green: '#7ed6a0', blue: '#7aa7ff', red: '#ff7a8a', orange: '#ffb070' },
   };
 
-  function parseMove(str) {
-    const m = { ...MOVES[str[0]] };
-    if (str[1] === "'") m.q = -m.q;
-    else if (str[1] === '2') m.q *= 2;
-    return m;
+  const ALGOS = [
+    ['Sexy move (×6 = solved)', "R U R' U'"],
+    ['Sune', "R U R' U R U2 R'"],
+    ['Anti-Sune', "R U2 R' U' R U' R'"],
+    ['Sledgehammer', "R' F R F'"],
+    ['T-perm', "R U R' U' R' F R2 U' R' U' R U R' F'"],
+    ['Checkerboard (odd sizes)', 'M2 E2 S2'],
+  ];
+
+  let N = 3; // cube size
+
+  // Clockwise (seen from outside the face) = +90° about the outward normal.
+  function moveTable() {
+    const e = N - 1;
+    const t = {
+      U: { axis: 1, layer: -e, q: -1 },
+      D: { axis: 1, layer: e, q: 1 },
+      R: { axis: 0, layer: e, q: 1 },
+      L: { axis: 0, layer: -e, q: -1 },
+      F: { axis: 2, layer: e, q: 1 },
+      B: { axis: 2, layer: -e, q: -1 },
+    };
+    if (N % 2 === 1) {
+      t.M = { axis: 0, layer: 0, q: -1 }; // follows L
+      t.E = { axis: 1, layer: 0, q: 1 };  // follows D
+      t.S = { axis: 2, layer: 0, q: 1 };  // follows F
+    }
+    return t;
   }
+
+  function parseMove(tok) {
+    const mt = /^([UDLRFBMES])(2'?|')?$/.exec(tok);
+    if (!mt) return null;
+    const base = moveTable()[mt[1]];
+    if (!base) return null;
+    let q = base.q;
+    const suf = mt[2] || '';
+    if (suf.includes('2')) q *= 2;
+    if (suf.includes("'")) q = -q;
+    return { axis: base.axis, layer: base.layer, q };
+  }
+
+  function parseAlgorithm(text) {
+    const toks = text.replace(/[’‘`´]/g, "'").replace(/[()[\]]/g, ' ').split(/[\s,]+/).filter(Boolean);
+    const moves = [], bad = [];
+    for (const t of toks) {
+      const m = parseMove(t.toUpperCase());
+      if (m) moves.push(m); else bad.push(t);
+    }
+    return { moves, bad };
+  }
+
   const inverse = (m) => ({ ...m, q: -m.q });
 
   function moveName(m) {
-    for (const k in MOVES) {
-      const b = MOVES[k];
+    const t = moveTable();
+    for (const k in t) {
+      const b = t[k];
       if (b.axis === m.axis && b.layer === m.layer) {
         const r = m.q / b.q;
         return k + (Math.abs(r) === 2 ? '2' : r < 0 ? "'" : '');
       }
     }
-    return '';
+    const idx = (m.layer + (N - 1)) / 2 + 1; // inner layers: x2, y3' …
+    return 'xyz'[m.axis] + idx + (Math.abs(m.q) === 2 ? '2' : m.q < 0 ? "'" : '');
   }
 
   /* ---------------------------------------------------------------- math */
@@ -84,6 +135,57 @@
     a[0] * b[1] - a[1] * b[0],
   ];
 
+  // float rotations (CSS convention) for the camera
+  const rotX = (a) => { const c = Math.cos(a), s = Math.sin(a); return [[1, 0, 0], [0, c, -s], [0, s, c]]; };
+  const rotY = (a) => { const c = Math.cos(a), s = Math.sin(a); return [[c, 0, s], [0, 1, 0], [-s, 0, c]]; };
+
+  function orthonormalize(m) {
+    const norm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+    const r0 = norm(m[0]);
+    const d = m[1][0] * r0[0] + m[1][1] * r0[1] + m[1][2] * r0[2];
+    const r1 = norm([m[1][0] - d * r0[0], m[1][1] - d * r0[1], m[1][2] - d * r0[2]]);
+    return [r0, r1, cross(r0, r1)];
+  }
+
+  function matToQuat(m) {
+    const t = m[0][0] + m[1][1] + m[2][2];
+    let w, x, y, z, s;
+    if (t > 0) {
+      s = Math.sqrt(t + 1) * 2; w = s / 4;
+      x = (m[2][1] - m[1][2]) / s; y = (m[0][2] - m[2][0]) / s; z = (m[1][0] - m[0][1]) / s;
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+      s = Math.sqrt(1 + m[0][0] - m[1][1] - m[2][2]) * 2;
+      w = (m[2][1] - m[1][2]) / s; x = s / 4; y = (m[0][1] + m[1][0]) / s; z = (m[0][2] + m[2][0]) / s;
+    } else if (m[1][1] > m[2][2]) {
+      s = Math.sqrt(1 + m[1][1] - m[0][0] - m[2][2]) * 2;
+      w = (m[0][2] - m[2][0]) / s; x = (m[0][1] + m[1][0]) / s; y = s / 4; z = (m[1][2] + m[2][1]) / s;
+    } else {
+      s = Math.sqrt(1 + m[2][2] - m[0][0] - m[1][1]) * 2;
+      w = (m[1][0] - m[0][1]) / s; x = (m[0][2] + m[2][0]) / s; y = (m[1][2] + m[2][1]) / s; z = s / 4;
+    }
+    return [w, x, y, z];
+  }
+  function quatToMat(q) {
+    const [w, x, y, z] = q;
+    return [
+      [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ];
+  }
+  function slerp(a, b, t) {
+    let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    if (d < 0) { b = b.map((v) => -v); d = -d; }
+    if (d > 0.9995) {
+      const r = a.map((v, i) => v + (b[i] - v) * t);
+      const n = Math.hypot(...r);
+      return r.map((v) => v / n);
+    }
+    const th = Math.acos(d), s = Math.sin(th);
+    const k1 = Math.sin((1 - t) * th) / s, k2 = Math.sin(t * th) / s;
+    return a.map((v, i) => k1 * v + k2 * b[i]);
+  }
+
   const easeInOut = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
   const easeOutBack = (t) => { const c1 = 1.2, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
 
@@ -113,16 +215,23 @@
   const btn = {
     scramble: $('#scrambleBtn'), solve: $('#solveBtn'), undo: $('#undoBtn'),
     redo: $('#redoBtn'), reset: $('#resetBtn'), pad: $('#padBtn'),
+    spin: $('#spinBtn'), view: $('#viewResetBtn'), copy: $('#copyBtn'),
   };
-  const speedEl = $('#speed');
-  const soundEl = $('#sound');
-  const helpEl = $('#help');
+  const speedEl = $('#speed'), speedOut = $('#speedOut');
+  const soundEl = $('#sound'), labelsEl = $('#labels'), spinEl = $('#spin');
+  const sizeSel = $('#sizeSel'), paletteSel = $('#paletteSel');
+  const algoSel = $('#algoSel'), algoIn = $('#algoIn');
+  const histText = $('#histText');
+  const helpEl = $('#help'), settingsEl = $('#settings');
+  const installBtn = $('#installBtn');
 
   /* ---------------------------------------------------------------- state */
 
   const cubies = [];
   let size = 90;
-  let rx = -28, ry = -38, zoom = 1;          // camera
+  let cam = mul(rotX(-28 * DEG), rotY(-38 * DEG));  // camera rotation (world → screen)
+  let zoom = 1;
+  const HOME_CAM = mul(rotX(-28 * DEG), rotY(-38 * DEG));
   let layerAnim = null;                      // {axis, layer, angle}
 
   const queue = [];
@@ -135,8 +244,9 @@
   let phase = 'fresh';                       // 'fresh' | 'scrambled'
   let timerStart = null;
   let soundOn = true;
+  let autoSpin = false;
 
-  function store(key, val) { try { localStorage.setItem(key, val); } catch (_) {} }
+  function store(key, val) { try { localStorage.setItem(key, val); } catch (_) { /* storage unavailable */ } }
   function load(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
 
   /* ---------------------------------------------------------------- build */
@@ -144,30 +254,34 @@
   function build() {
     cubeEl.innerHTML = '';
     cubies.length = 0;
-    for (let x = -1; x <= 1; x++)
-      for (let y = -1; y <= 1; y++)
-        for (let z = -1; z <= 1; z++) {
-          const el = document.createElement('div');
-          el.className = 'cubie';
-          const c = { pos: [x, y, z], home: [x, y, z], M: ident(), el, stickers: [] };
-          const idx = cubies.length;
-          FACES.forEach((f, fi) => {
-            const outer = f.n.some((v, k) => v !== 0 && v === c.pos[k]);
-            const face = document.createElement('div');
-            face.className = 'face ' + f.id + (outer ? '' : ' inner');
-            if (outer) {
-              face.dataset.f = fi;
-              face.dataset.c = idx;
-              const st = document.createElement('i');
-              st.className = 'sticker';
-              face.appendChild(st);
-              c.stickers.push(fi);
-            }
-            el.appendChild(face);
-          });
-          cubies.push(c);
-          cubeEl.appendChild(el);
+    const e = N - 1;
+    const coords = Array.from({ length: N }, (_, i) => 2 * i - e);
+    for (const x of coords) for (const y of coords) for (const z of coords) {
+      // fully hidden pieces are skipped on big cubes to keep it fast
+      if (N >= 4 && Math.abs(x) < e && Math.abs(y) < e && Math.abs(z) < e) continue;
+      const el = document.createElement('div');
+      el.className = 'cubie';
+      const idx = cubies.length;
+      const c = { pos: [x, y, z], home: [x, y, z], M: ident(), el, stickers: [], last: '' };
+      FACES.forEach((f, fi) => {
+        const outer = f.n.some((v, k) => v !== 0 && v * e === c.pos[k]);
+        const face = document.createElement('div');
+        face.className = 'face ' + f.id + (outer ? '' : ' inner');
+        if (outer) {
+          face.dataset.f = fi;
+          face.dataset.c = idx;
+          const st = document.createElement('i');
+          st.className = 'sticker';
+          st.dataset.l = f.id;
+          face.appendChild(st);
+          c.stickers.push(fi);
         }
+        el.appendChild(face);
+      });
+      cubies.push(c);
+      cubeEl.appendChild(el);
+    }
+    root.style.setProperty('--n', N);
     renderAll();
   }
 
@@ -179,11 +293,11 @@
   /* --------------------------------------------------------------- render */
 
   function cubieTransform(c) {
-    const M = c.M, S = size;
+    const M = c.M, h = size / 2;
     let t = `matrix3d(${M[0][0]},${M[1][0]},${M[2][0]},0,` +
             `${M[0][1]},${M[1][1]},${M[2][1]},0,` +
             `${M[0][2]},${M[1][2]},${M[2][2]},0,` +
-            `${c.pos[0] * S},${c.pos[1] * S},${c.pos[2] * S},1)`;
+            `${c.pos[0] * h},${c.pos[1] * h},${c.pos[2] * h},1)`;
     if (layerAnim && c.pos[layerAnim.axis] === layerAnim.layer) {
       const v = [0, 0, 0]; v[layerAnim.axis] = 1;
       t = `rotate3d(${v[0]},${v[1]},${v[2]},${layerAnim.angle}deg) ` + t;
@@ -192,18 +306,29 @@
   }
 
   function renderAll() {
-    for (const c of cubies) c.el.style.transform = cubieTransform(c);
+    for (const c of cubies) {
+      const t = cubieTransform(c);
+      if (t !== c.last) { c.el.style.transform = t; c.last = t; }
+    }
   }
 
   function renderCamera() {
-    cubeEl.style.transform = `rotateX(${rx}deg) rotateY(${ry}deg) scale(${zoom})`;
+    cubeEl.style.transform =
+      `matrix3d(${cam[0][0]},${cam[1][0]},${cam[2][0]},0,${cam[0][1]},${cam[1][1]},${cam[2][1]},0,` +
+      `${cam[0][2]},${cam[1][2]},${cam[2][2]},0,0,0,0,1) scale(${zoom})`;
   }
 
   function fit() {
     const w = stage.clientWidth, h = stage.clientHeight;
-    size = Math.max(40, Math.min(112, Math.floor(Math.min(w / 4.4, h / 3.9))));
+    size = Math.max(28, Math.min(120, Math.floor(Math.min(w / (N * 1.75), h / (N * 1.45)))));
     root.style.setProperty('--s', size + 'px');
+    for (const c of cubies) c.last = '';
     renderAll();
+  }
+
+  // Rotate the camera about the SCREEN axes (free trackball: no limits, any number of turns).
+  function orbit(yawDeg, pitchDeg) {
+    cam = orthonormalize(mul(mul(rotX(pitchDeg * DEG), rotY(yawDeg * DEG)), cam));
   }
 
   /* ----------------------------------------------------------- move engine */
@@ -218,11 +343,14 @@
     }
   }
 
+  // Milliseconds for one quarter turn at the chosen speed (1 = slow … 10 = fast).
+  const baseDur = () => 1250 * Math.pow(0.83, (+speedEl.value) - 1);
+
   function turnDuration(e) {
-    const speed = +speedEl.value;
-    let d = e.dur != null ? e.dur : 700 - 60 * speed;
-    if (e.dur == null && queue.length > 3) d *= 0.6;
-    return d * (Math.abs(e.m.q) === 2 ? 1.35 : 1);
+    if (e.dur != null) return e.dur;
+    let d = baseDur();
+    if (queue.length > 3) d *= 0.6;
+    return d * (Math.abs(e.m.q) === 2 ? 1.25 : 1);
   }
 
   function runMove(e, done) {
@@ -279,7 +407,7 @@
         history.pop();
         break;
     }
-    if (e.kind !== 'scramble' && e.kind !== 'auto') click();
+    if (e.kind !== 'scramble' && e.kind !== 'auto') { click(); saveState(); }
     updateUI();
   }
 
@@ -292,6 +420,7 @@
       redoStack.length = 0;
       showTimer(0);
       toast('Cube scrambled', 'Your timer starts on your first move', 1800);
+      saveState();
     } else if (pendingKind === 'auto') {
       phase = 'fresh';
       moves = 0;
@@ -299,6 +428,7 @@
       history = [];
       redoStack.length = 0;
       showTimer(0);
+      saveState();
     } else if (phase === 'scrambled' && moves > 0 && isSolved()) {
       win();
     }
@@ -309,10 +439,24 @@
   /* -------------------------------------------------------------- commands */
 
   function userMove(str) {
-    if (lock) return;
+    if (lock) return false;
+    const m = parseMove(str);
+    if (!m) return false;
     hideHint();
-    queue.push({ m: parseMove(str), kind: 'user' });
+    queue.push({ m, kind: 'user' });
     pump();
+    return true;
+  }
+
+  function runAlgorithm(text) {
+    if (lock) return false;
+    const { moves: seq, bad } = parseAlgorithm(text);
+    if (!text.trim()) { toast('Type some moves', "e.g. R U R′ U′", 1800); return false; }
+    if (bad.length) { toast('Unknown move', bad.slice(0, 3).join(' ') + (N % 2 === 0 && /[MES]/i.test(bad.join('')) ? ' (slices need an odd size)' : ''), 2400); return false; }
+    hideHint();
+    seq.forEach((m) => queue.push({ m, kind: 'user' }));
+    pump();
+    return true;
   }
 
   function scramble() {
@@ -321,14 +465,16 @@
     history = []; redoStack = []; moves = 0; timerStart = null;
     showTimer(0);
     lock = true; pendingKind = 'scramble';
+    const count = { 2: 11, 3: 25, 4: 40, 5: 55 }[N];
+    const dur = Math.max(90, Math.min(260, baseDur() * 0.3));
     const faces = 'UDLRFB';
     let last = '';
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < count; i++) {
       let f;
       do { f = faces[Math.floor(Math.random() * 6)]; } while (f === last);
       last = f;
       const suffix = ['', "'", '2'][Math.floor(Math.random() * 3)];
-      queue.push({ m: parseMove(f + suffix), kind: 'scramble', dur: 80 });
+      queue.push({ m: parseMove(f + suffix), kind: 'scramble', dur });
     }
     pump();
   }
@@ -338,7 +484,9 @@
     lock = true; pendingKind = 'auto';
     timerStart = null;
     const seq = history.slice().reverse();
-    seq.forEach((h) => queue.push({ m: inverse(h.m), kind: 'auto', dur: Math.max(70, 150 - seq.length * 2) }));
+    let dur = Math.max(70, Math.min(240, baseDur() * 0.3));
+    if (seq.length > 30) dur = Math.max(60, dur * 0.6);
+    seq.forEach((h) => queue.push({ m: inverse(h.m), kind: 'auto', dur }));
     pump();
   }
 
@@ -365,7 +513,70 @@
     void cubeEl.offsetWidth;
     cubeEl.classList.add('pop');
     click();
+    saveState();
     updateUI();
+  }
+
+  function setSize(n) {
+    if (n === N) return true;
+    if (busy || queue.length || lock) { sizeSel.value = N; toast('Wait for the cube to stop', '', 1500); return false; }
+    N = n;
+    store(KEY.size, String(N));
+    history = []; redoStack = []; moves = 0; phase = 'fresh'; timerStart = null;
+    showTimer(0);
+    build();
+    fit();
+    refreshBest();
+    cubeEl.classList.remove('pop');
+    void cubeEl.offsetWidth;
+    cubeEl.classList.add('pop');
+    sizeSel.value = String(N);
+    saveState();
+    updateUI();
+    return true;
+  }
+
+  /* --------------------------------------------------------------- persist */
+
+  function saveState() {
+    try {
+      localStorage.setItem(KEY.state, JSON.stringify({
+        v: 2, n: N,
+        c: cubies.map((c) => [c.pos, c.M]),
+        h: history.map((h) => [h.m.axis, h.m.layer, h.m.q, h.user ? 1 : 0]),
+        mv: moves, ph: phase,
+        el: timerStart !== null ? performance.now() - timerStart : null,
+      }));
+    } catch (_) { /* storage unavailable */ }
+  }
+
+  function loadState() {
+    try {
+      const s = JSON.parse(localStorage.getItem(KEY.state));
+      if (!s || s.v !== 2 || ![2, 3, 4, 5].includes(s.n)) return false;
+      N = s.n;
+      build();
+      if (!Array.isArray(s.c) || s.c.length !== cubies.length) throw new Error('bad state');
+      const seen = new Set();
+      s.c.forEach(([pos, M], i) => {
+        if (!Array.isArray(pos) || pos.length !== 3 || !pos.every(Number.isInteger)) throw new Error('bad pos');
+        if (!Array.isArray(M) || M.length !== 3 || !M.every((r) => Array.isArray(r) && r.length === 3 && r.every((v) => v === 0 || v === 1 || v === -1))) throw new Error('bad M');
+        seen.add(pos.join());
+        cubies[i].pos = pos; cubies[i].M = M;
+      });
+      const homes = new Set(cubies.map((c) => c.home.join()));
+      if (seen.size !== homes.size || [...seen].some((k) => !homes.has(k))) throw new Error('bad perm');
+      history = (s.h || []).map(([axis, layer, q, u]) => ({ m: { axis, layer, q }, user: !!u }));
+      moves = s.mv | 0;
+      phase = s.ph === 'scrambled' ? 'scrambled' : 'fresh';
+      timerStart = typeof s.el === 'number' ? performance.now() - s.el : null;
+      renderAll();
+      return true;
+    } catch (_) {
+      N = 3; history = []; moves = 0; phase = 'fresh'; timerStart = null;
+      build();
+      return false;
+    }
   }
 
   /* ---------------------------------------------------------------- solved */
@@ -391,11 +602,12 @@
     let sub = `${moves} moves`;
     if (hadTimer) {
       sub += ` · ${fmt(t)}`;
-      const best = parseFloat(load('cube3d.best'));
-      if (!best || t < best) { store('cube3d.best', String(t)); bestEl.textContent = fmt(t); sub += ' · new best!'; }
+      const best = parseFloat(load(KEY.best + N));
+      if (!best || t < best) { store(KEY.best + N, String(t)); refreshBest(); sub += ' · new best!'; }
     }
     toast('Solved! 🎉', sub, 4200);
     confetti();
+    saveState();
   }
 
   /* ------------------------------------------------------------------- UI */
@@ -409,6 +621,11 @@
   }
   const showTimer = (ms) => { timerEl.textContent = fmt(ms); };
 
+  function refreshBest() {
+    const b = parseFloat(load(KEY.best + N));
+    bestEl.textContent = b ? fmt(b) : '—';
+  }
+
   setInterval(() => { if (timerStart !== null) showTimer(performance.now() - timerStart); }, 50);
 
   function updateUI() {
@@ -419,11 +636,17 @@
     btn.undo.disabled = !idle || !history.length;
     btn.redo.disabled = !idle || !redoStack.length;
     btn.solve.disabled = !idle || !history.length;
+    const names = history.map((h) => moveName(h.m));
+    histText.textContent = names.length ? names.join(' ') : 'No moves yet';
+    btn.copy.disabled = !names.length;
+    speedOut.textContent = (baseDur() / 1000).toFixed(2) + 's';
   }
 
   let toastTimer;
   function toast(title, sub, ms) {
-    toastEl.innerHTML = `${title}${sub ? `<small>${sub}</small>` : ''}`;
+    toastEl.innerHTML = '';
+    toastEl.append(document.createTextNode(title));
+    if (sub) { const s = document.createElement('small'); s.textContent = sub; toastEl.append(s); }
     toastEl.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms || 2000);
@@ -439,7 +662,7 @@
   function hideHint() { hintEl.classList.add('hide'); }
 
   function confetti() {
-    const colors = ['#f4f4f2', '#ffd300', '#00a14b', '#0051ba', '#c41e3a', '#ff5800'];
+    const colors = Object.values(PALETTES[paletteSel.value] || PALETTES.classic);
     for (let i = 0; i < 70; i++) {
       const p = document.createElement('i');
       p.style.left = Math.random() * 100 + '%';
@@ -453,33 +676,87 @@
     }
   }
 
+  function applyPalette(name) {
+    const p = PALETTES[name] || PALETTES.classic;
+    for (const k in p) root.style.setProperty('--' + k, p[k]);
+    paletteSel.value = PALETTES[name] ? name : 'classic';
+  }
+
+  function setAutoSpin(on) {
+    autoSpin = on;
+    spinEl.checked = on;
+    btn.spin.classList.toggle('on', on);
+    btn.spin.setAttribute('aria-pressed', on);
+    if (on) kickCam();
+  }
+
   /* ----------------------------------------------------------------- audio */
 
   let actx;
   function click() {
-    if (soundOn) {
-      try {
-        actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-        if (actx.state === 'suspended') actx.resume();
-        const t = actx.currentTime;
-        const o = actx.createOscillator(), g = actx.createGain();
-        o.type = 'triangle';
-        o.frequency.setValueAtTime(230 + Math.random() * 70, t);
-        o.frequency.exponentialRampToValueAtTime(90, t + .06);
-        g.gain.setValueAtTime(.13, t);
-        g.gain.exponentialRampToValueAtTime(.001, t + .09);
-        o.connect(g); g.connect(actx.destination);
-        o.start(t); o.stop(t + .1);
-      } catch (_) { /* audio unavailable */ }
+    if (!soundOn) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      const t = actx.currentTime;
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(230 + Math.random() * 70, t);
+      o.frequency.exponentialRampToValueAtTime(90, t + .06);
+      g.gain.setValueAtTime(.13, t);
+      g.gain.exponentialRampToValueAtTime(.001, t + .09);
+      o.connect(g); g.connect(actx.destination);
+      o.start(t); o.stop(t + .1);
+    } catch (_) { /* audio unavailable */ }
+    if (navigator.vibrate) navigator.vibrate(6);
+  }
+
+  /* ------------------------------------------------------------- camera loop */
+
+  const vel = { x: 0, y: 0 };   // yaw / pitch velocity in degrees per 16.7ms frame
+  const ORBIT_SENS = 0.6;       // degrees per pixel dragged
+  const AUTO_SPIN = 0.4;        // degrees per frame
+  let camRaf = 0, lastTs = 0, viewToken = 0;
+
+  function camLoop(ts) {
+    const dt = lastTs ? Math.min(40, ts - lastTs) : 16.7;
+    lastTs = ts;
+    const f = dt / 16.7;
+    const dragging = gesture && gesture.type === 'orbit';
+    let active = false;
+    if (!dragging) {
+      if (Math.abs(vel.x) > .03 || Math.abs(vel.y) > .03) {
+        orbit(vel.x * f, vel.y * f);
+        const d = Math.pow(.975, f);
+        vel.x *= d; vel.y *= d;
+        active = true;
+      } else {
+        vel.x = vel.y = 0;
+        if (autoSpin && !gesture) { orbit(AUTO_SPIN * f, 0); active = true; }
+      }
     }
-    if (soundOn && navigator.vibrate) navigator.vibrate(6);
+    if (active) renderCamera();
+    camRaf = (active || autoSpin || dragging) ? requestAnimationFrame(camLoop) : 0;
+    if (!camRaf) lastTs = 0;
+  }
+  function kickCam() { if (!camRaf) { lastTs = 0; camRaf = requestAnimationFrame(camLoop); } }
+
+  function resetView() {
+    const tok = ++viewToken;
+    vel.x = vel.y = 0;
+    const q0 = matToQuat(cam), q1 = matToQuat(HOME_CAM), z0 = zoom;
+    animate(0, 1, 650, easeInOut, (t) => {
+      if (tok !== viewToken) return;
+      cam = orthonormalize(quatToMat(slerp(q0, q1, t)));
+      zoom = z0 + (1 - z0) * t;
+      renderCamera();
+    });
   }
 
   /* ------------------------------------------------------------- pointers */
 
   const pointers = new Map();
   let gesture = null;
-  let inertia = 0;
 
   const pinchDist = () => {
     const [a, b] = [...pointers.values()];
@@ -487,19 +764,16 @@
   };
 
   // World vector → screen (x, y) for the current camera.
-  function toScreen(v) {
-    const a = ry * DEG, b = rx * DEG;
-    const x1 = v[0] * Math.cos(a) + v[2] * Math.sin(a);
-    const z1 = -v[0] * Math.sin(a) + v[2] * Math.cos(a);
-    const y2 = v[1] * Math.cos(b) - z1 * Math.sin(b);
-    return [x1, y2];
-  }
-
-  function clampCamera() { rx = Math.max(-89, Math.min(89, rx)); }
+  const toScreen = (v) => [
+    cam[0][0] * v[0] + cam[0][1] * v[1] + cam[0][2] * v[2],
+    cam[1][0] * v[0] + cam[1][1] * v[1] + cam[1][2] * v[2],
+  ];
 
   stage.addEventListener('pointerdown', (e) => {
     if (e.button > 0) return;
-    cancelAnimationFrame(inertia);
+    if (e.target.closest && e.target.closest('button')) return;
+    viewToken++;                       // cancel any view-reset tween
+    vel.x = vel.y = 0;                 // grab = stop the spin
     stage.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (actx && actx.state === 'suspended') actx.resume();
@@ -513,6 +787,7 @@
       gesture = { type: 'maybe', cubie: +face.dataset.c, f: +face.dataset.f, sx: e.clientX, sy: e.clientY };
     } else {
       gesture = { type: 'orbit', lx: e.clientX, ly: e.clientY, vx: 0, vy: 0, t: performance.now() };
+      kickCam();
     }
   });
 
@@ -522,19 +797,23 @@
 
     if (gesture.type === 'pinch') {
       if (pointers.size >= 2) {
-        zoom = Math.max(.55, Math.min(1.9, gesture.z0 * pinchDist() / gesture.d0));
+        zoom = Math.max(.5, Math.min(2, gesture.z0 * pinchDist() / gesture.d0));
         renderCamera();
       }
       return;
     }
 
     if (gesture.type === 'orbit') {
-      const dx = e.clientX - gesture.lx, dy = e.clientY - gesture.ly;
-      gesture.lx = e.clientX; gesture.ly = e.clientY;
-      ry += dx * .45; rx -= dy * .45;
-      clampCamera();
-      gesture.vy = dx * .45; gesture.vx = -dy * .45;
-      gesture.t = performance.now();
+      const g = gesture;
+      const dx = e.clientX - g.lx, dy = e.clientY - g.ly;
+      const now = performance.now();
+      const dt = Math.max(1, now - g.t);
+      g.lx = e.clientX; g.ly = e.clientY; g.t = now;
+      const yaw = dx * ORBIT_SENS, pitch = -dy * ORBIT_SENS;
+      orbit(yaw, pitch);
+      const cap = (v) => Math.max(-45, Math.min(45, v));
+      g.vx = cap(.6 * g.vx + .4 * (yaw / dt * 16.7));
+      g.vy = cap(.6 * g.vy + .4 * (pitch / dt * 16.7));
       renderCamera();
       hideHint();
       return;
@@ -552,7 +831,7 @@
     const c = cubies[g.cubie];
     const n = apply(c.M, FACES[g.f].n);
     const nAxis = n.findIndex((v) => v !== 0);
-    const p = [c.pos[0] + n[0] * .5, c.pos[1] + n[1] * .5, c.pos[2] + n[2] * .5];
+    const p = [c.pos[0] / 2 + n[0] * .5, c.pos[1] / 2 + n[1] * .5, c.pos[2] / 2 + n[2] * .5];
     let best = null;
     for (let k = 0; k < 3; k++) {
       if (k === nAxis) continue;
@@ -575,7 +854,7 @@
 
   function updateTurn(g, e) {
     const proj = (e.clientX - g.sx) * g.dir[0] + (e.clientY - g.sy) * g.dir[1];
-    const ang = Math.max(-200, Math.min(200, proj * (55 / (size * zoom))));
+    const ang = Math.max(-200, Math.min(200, proj * (165 / (N * size * zoom))));
     const now = performance.now();
     if (g.t !== null) {
       const dt = now - g.t;
@@ -589,12 +868,13 @@
 
   function releaseTurn(g) {
     const stale = performance.now() - (g.t || 0) > 90;
-    const vel = stale ? 0 : g.vel;
-    let turns = Math.round((g.angle + vel * 130) / 90);
+    const vel0 = stale ? 0 : g.vel;
+    let turns = Math.round((g.angle + vel0 * 130) / 90);
     if (turns === 0 && Math.abs(g.angle) > 24) turns = Math.sign(g.angle);
     turns = Math.max(-2, Math.min(2, turns));
     const from = g.angle, to = turns * 90;
-    animate(from, to, 170 + Math.abs(to - from) * 3, easeOutBack, (a) => {
+    const scale = Math.max(.7, Math.min(1.6, baseDur() / 700));
+    animate(from, to, (220 + Math.abs(to - from) * 3.5) * scale, easeOutBack, (a) => {
       layerAnim.angle = a;
       renderAll();
     }, () => {
@@ -615,24 +895,22 @@
     if (g.type === 'pinch') { if (pointers.size < 2) gesture = null; return; }
     gesture = null;
     if (g.type === 'turn') releaseTurn(g);
-    else if (g.type === 'orbit' && performance.now() - g.t < 80) startInertia(g.vx, g.vy);
+    else if (g.type === 'orbit') {
+      if (performance.now() - g.t < 80) { vel.x = g.vx; vel.y = g.vy; }
+      kickCam();
+    }
   }
   stage.addEventListener('pointerup', endPointer);
   stage.addEventListener('pointercancel', endPointer);
 
-  function startInertia(vx, vy) {
-    const step = () => {
-      vx *= .94; vy *= .94;
-      if (Math.abs(vx) < .02 && Math.abs(vy) < .02) return;
-      ry += vy; rx += vx; clampCamera(); renderCamera();
-      inertia = requestAnimationFrame(step);
-    };
-    inertia = requestAnimationFrame(step);
-  }
+  stage.addEventListener('dblclick', (e) => {
+    if (e.target.closest && (e.target.closest('button') || e.target.closest('.face[data-f]'))) return;
+    resetView();
+  });
 
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoom = Math.max(.55, Math.min(1.9, zoom * (1 - e.deltaY * .0012)));
+    zoom = Math.max(.5, Math.min(2, zoom * (1 - e.deltaY * .0012)));
     renderCamera();
   }, { passive: false });
 
@@ -643,6 +921,8 @@
   btn.undo.addEventListener('click', undo);
   btn.redo.addEventListener('click', redo);
   btn.reset.addEventListener('click', resetCube);
+  btn.view.addEventListener('click', resetView);
+  btn.spin.addEventListener('click', () => setAutoSpin(!autoSpin));
   btn.pad.addEventListener('click', () => {
     const open = dock.classList.toggle('open');
     btn.pad.setAttribute('aria-expanded', open);
@@ -652,15 +932,52 @@
   document.querySelectorAll('.pad button').forEach((b) =>
     b.addEventListener('click', () => userMove(b.dataset.move)));
 
-  speedEl.addEventListener('input', () => store('cube3d.speed', speedEl.value));
-  soundEl.addEventListener('change', () => { soundOn = soundEl.checked; store('cube3d.sound', soundOn ? '1' : '0'); });
+  ALGOS.forEach(([name, seq]) => {
+    const o = document.createElement('option');
+    o.value = seq; o.textContent = name;
+    algoSel.appendChild(o);
+  });
+  algoSel.addEventListener('change', () => { if (algoSel.value) { algoIn.value = algoSel.value; } });
+  $('#algoRun').addEventListener('click', () => { runAlgorithm(algoIn.value); algoIn.blur(); });
+  algoIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { runAlgorithm(algoIn.value); algoIn.blur(); } });
 
-  $('#helpBtn').addEventListener('click', () => { helpEl.hidden = false; });
-  $('#helpClose').addEventListener('click', () => { helpEl.hidden = true; });
-  helpEl.addEventListener('click', (e) => { if (e.target === helpEl) helpEl.hidden = true; });
+  btn.copy.addEventListener('click', async () => {
+    const text = history.map((h) => moveName(h.m)).join(' ');
+    try { await navigator.clipboard.writeText(text); toast('Copied', 'Move history is on your clipboard', 1500); }
+    catch (_) { toast('Could not copy', '', 1500); }
+  });
+
+  speedEl.addEventListener('input', () => { store(KEY.speed, speedEl.value); updateUI(); });
+  soundEl.addEventListener('change', () => { soundOn = soundEl.checked; store(KEY.sound, soundOn ? '1' : '0'); });
+  labelsEl.addEventListener('change', () => { document.body.classList.toggle('labels', labelsEl.checked); store(KEY.labels, labelsEl.checked ? '1' : '0'); });
+  spinEl.addEventListener('change', () => setAutoSpin(spinEl.checked));
+  sizeSel.addEventListener('change', () => setSize(+sizeSel.value));
+  paletteSel.addEventListener('change', () => { applyPalette(paletteSel.value); store(KEY.palette, paletteSel.value); });
+  $('#clearBest').addEventListener('click', () => {
+    [2, 3, 4, 5].forEach((n) => { try { localStorage.removeItem(KEY.best + n); } catch (_) { /* ignore */ } });
+    refreshBest();
+    toast('Best times cleared', '', 1400);
+  });
+
+  const closeAll = () => { helpEl.hidden = true; settingsEl.hidden = true; };
+  $('#helpBtn').addEventListener('click', () => { settingsEl.hidden = true; helpEl.hidden = false; });
+  $('#settingsBtn').addEventListener('click', () => { helpEl.hidden = true; settingsEl.hidden = false; });
+  $('#helpClose').addEventListener('click', closeAll);
+  $('#settingsClose').addEventListener('click', closeAll);
+  [helpEl, settingsEl].forEach((o) => o.addEventListener('click', (e) => { if (e.target === o) closeAll(); }));
+
+  let deferredInstall = null;
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; installBtn.hidden = false; });
+  installBtn.addEventListener('click', async () => {
+    if (!deferredInstall) return;
+    deferredInstall.prompt();
+    try { await deferredInstall.userChoice; } catch (_) { /* ignore */ }
+    deferredInstall = null; installBtn.hidden = true;
+  });
 
   window.addEventListener('keydown', (e) => {
-    if (e.target.matches && e.target.matches('input')) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     const key = e.key;
 
     if (e.ctrlKey || e.metaKey) {
@@ -671,9 +988,11 @@
     }
     if (e.altKey) return;
 
-    if (key === 'Escape') { helpEl.hidden = true; return; }
-    if (key === '?') { helpEl.hidden = !helpEl.hidden; return; }
+    if (key === 'Escape') { closeAll(); return; }
+    if (key === '?') { settingsEl.hidden = true; helpEl.hidden = !helpEl.hidden; return; }
     if (key === ' ' && document.activeElement === document.body) { e.preventDefault(); scramble(); return; }
+    if (key === 'Home') { e.preventDefault(); resetView(); return; }
+    if (key.toLowerCase() === 'p') { setAutoSpin(!autoSpin); return; }
 
     const up = key.toUpperCase();
     if (key.length === 1 && 'UDLRFBMES'.includes(up)) {
@@ -681,30 +1000,53 @@
       userMove(up + (e.shiftKey ? "'" : ''));
       return;
     }
-    const nudge = { ArrowLeft: [-12, 0], ArrowRight: [12, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[key];
+    const nudge = { ArrowLeft: [-15, 0], ArrowRight: [15, 0], ArrowUp: [0, 15], ArrowDown: [0, -15] }[key];
     if (nudge) {
       e.preventDefault();
-      ry += nudge[0]; rx -= nudge[1]; clampCamera(); renderCamera();
+      orbit(nudge[0], nudge[1]); renderCamera();
     }
   });
 
   window.addEventListener('resize', fit);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveState(); });
+  window.addEventListener('pagehide', saveState);
 
   /* ------------------------------------------------------------------ init */
 
   (function init() {
-    const sp = load('cube3d.speed');
+    const sp = load(KEY.speed);
     if (sp) speedEl.value = sp;
-    soundOn = load('cube3d.sound') !== '0';
+    soundOn = load(KEY.sound) !== '0';
     soundEl.checked = soundOn;
-    const best = parseFloat(load('cube3d.best'));
-    if (best) bestEl.textContent = fmt(best);
+    const lb = load(KEY.labels) === '1';
+    labelsEl.checked = lb;
+    document.body.classList.toggle('labels', lb);
+    applyPalette(load(KEY.palette) || 'classic');
+
+    if (!loadState()) {
+      const saved = parseInt(load(KEY.size), 10);
+      if ([2, 3, 4, 5].includes(saved)) N = saved;
+      build();
+    }
+    sizeSel.value = String(N);
     if (window.innerWidth >= 760) { dock.classList.add('open'); btn.pad.textContent = 'Moves ▴'; btn.pad.setAttribute('aria-expanded', 'true'); }
 
-    build();
     renderCamera();
     fit();
+    refreshBest();
+    if (timerStart !== null) showTimer(performance.now() - timerStart);
     updateUI();
     setTimeout(hideHint, 9000);
+
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
   })();
+
+  // Small public API – handy for embedding, demos and automated tests.
+  window.Cube3D = {
+    move: userMove, algorithm: runAlgorithm, scramble, solve: autoSolve, reset: resetCube,
+    undo, redo, isSolved, setSize, resetView,
+    get size() { return N; }, get moves() { return moves; }, get busy() { return busy || queue.length > 0; },
+  };
 })();
