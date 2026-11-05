@@ -3,8 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Cube 3D – Play a real Rubik's Cube online</title>
+  <meta name="description" content="A realistic, free 3D Rubik's Cube you can play in the browser. Drag to turn layers, spin the cube freely, 2×2 to 5×5, timer, undo, algorithms. Works offline.">
   <meta name="theme-color" content="#0b0d14">
-  <title>Cube 3D – Play a real Rubik's Cube</title>
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Cube 3D – Play a real Rubik's Cube">
+  <meta property="og:description" content="Drag to turn layers, spin freely, 2×2 to 5×5, timer, undo and algorithms. Installable and works offline.">
+  <meta name="twitter:card" content="summary">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="cube.css">
 </head>
 <body>
@@ -18,18 +26,28 @@
       <div><label>Time</label><b id="timer">0:00.0</b></div>
       <div><label>Best</label><b id="best">—</b></div>
     </div>
-    <button id="helpBtn" class="icon" aria-label="How to play">?</button>
+    <div class="topbtns">
+      <button id="settingsBtn" class="icon" aria-label="Settings">⚙</button>
+      <button id="helpBtn" class="icon" aria-label="How to play">?</button>
+    </div>
   </header>
 
   <main id="stage" class="stage">
     <div class="scene">
       <div class="shadow"></div>
-      <div id="cube" class="cube" aria-label="Rubik's cube"></div>
+      <div id="cube" class="cube" role="img" aria-label="3D Rubik's cube"></div>
     </div>
+
+    <div class="tools">
+      <button id="viewResetBtn" class="tool" aria-label="Reset view" title="Reset view (Home)">⌖</button>
+      <button id="spinBtn" class="tool" aria-label="Auto-spin" aria-pressed="false" title="Auto-spin (P)">↻</button>
+    </div>
+
     <div id="last" class="last" aria-hidden="true"></div>
-    <div id="hint" class="hint">Drag a sticker to turn a layer · drag the background to look around</div>
+    <div id="hint" class="hint">Drag a sticker to turn a layer · drag the background to spin the cube freely</div>
     <div id="toast" class="toast" role="status"></div>
     <div id="confetti" class="confetti" aria-hidden="true"></div>
+    <noscript><p class="noscript">Cube 3D needs JavaScript to run.</p></noscript>
   </main>
 
   <section id="dock" class="dock">
@@ -42,33 +60,74 @@
       <button id="padBtn" class="btn ghost" aria-expanded="false">Moves ▾</button>
     </div>
 
-    <div class="pad" id="pad">
-      <button data-move="U">U</button><button data-move="D">D</button>
-      <button data-move="L">L</button><button data-move="R">R</button>
-      <button data-move="F">F</button><button data-move="B">B</button>
-      <button data-move="U'">U′</button><button data-move="D'">D′</button>
-      <button data-move="L'">L′</button><button data-move="R'">R′</button>
-      <button data-move="F'">F′</button><button data-move="B'">B′</button>
-    </div>
+    <div class="panel" id="panel">
+      <div class="pad" id="pad">
+        <button data-move="U">U</button><button data-move="D">D</button>
+        <button data-move="L">L</button><button data-move="R">R</button>
+        <button data-move="F">F</button><button data-move="B">B</button>
+        <button data-move="U'">U′</button><button data-move="D'">D′</button>
+        <button data-move="L'">L′</button><button data-move="R'">R′</button>
+        <button data-move="F'">F′</button><button data-move="B'">B′</button>
+      </div>
 
-    <div class="row settings">
-      <label class="slider">Speed
-        <input id="speed" type="range" min="1" max="10" value="6">
-      </label>
-      <label class="switch"><input id="sound" type="checkbox" checked><span></span>Sound</label>
+      <div class="algo">
+        <select id="algoSel" aria-label="Algorithm presets"><option value="">Algorithms…</option></select>
+        <input id="algoIn" type="text" placeholder="Type moves: R U R' U'" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Move sequence">
+        <button id="algoRun" class="btn primary">Run</button>
+      </div>
+
+      <div class="hist">
+        <span id="histText">No moves yet</span>
+        <button id="copyBtn" class="btn ghost">Copy</button>
+      </div>
     </div>
   </section>
+
+  <div id="settings" class="overlay" hidden>
+    <div class="card">
+      <h2>Settings</h2>
+      <div class="form">
+        <label class="field">Cube size
+          <select id="sizeSel">
+            <option value="2">2 × 2</option>
+            <option value="3" selected>3 × 3</option>
+            <option value="4">4 × 4</option>
+            <option value="5">5 × 5</option>
+          </select>
+        </label>
+        <label class="field">Turn speed
+          <span class="range"><input id="speed" type="range" min="1" max="10" value="4"><output id="speedOut">0.7s</output></span>
+        </label>
+        <label class="field">Colours
+          <select id="paletteSel">
+            <option value="classic">Classic</option>
+            <option value="access">Colour-blind friendly</option>
+            <option value="soft">Soft pastel</option>
+          </select>
+        </label>
+        <label class="switch"><input id="labels" type="checkbox"><span></span>Show letters on stickers</label>
+        <label class="switch"><input id="sound" type="checkbox" checked><span></span>Sound &amp; vibration</label>
+        <label class="switch"><input id="spin" type="checkbox"><span></span>Auto-spin the cube</label>
+      </div>
+      <div class="row end">
+        <button id="installBtn" class="btn" hidden>Install app</button>
+        <button id="clearBest" class="btn ghost">Reset best times</button>
+        <button id="settingsClose" class="btn primary">Done</button>
+      </div>
+    </div>
+  </div>
 
   <div id="help" class="overlay" hidden>
     <div class="card">
       <h2>How to play</h2>
       <ul>
-        <li><b>Turn a layer</b> – drag any sticker along the direction you want it to move. Release to snap; a quick flick turns it too.</li>
-        <li><b>Look around</b> – drag the dark background (or use the arrow keys). Scroll or pinch to zoom.</li>
-        <li><b>Keyboard</b> – <kbd>U</kbd> <kbd>D</kbd> <kbd>L</kbd> <kbd>R</kbd> <kbd>F</kbd> <kbd>B</kbd> turn faces, hold <kbd>Shift</kbd> for the reverse. <kbd>M</kbd> <kbd>E</kbd> <kbd>S</kbd> turn the middle slices.</li>
-        <li><kbd>Space</kbd> scramble · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo</li>
-        <li><b>Timer</b> starts on your first move after a scramble and stops when the cube is solved.</li>
-        <li><b>Solve</b> replays your move history backwards to restore the cube.</li>
+        <li><b>Turn a layer</b> – drag any sticker the way you want it to move. Release to snap; a quick flick turns it too.</li>
+        <li><b>Spin the cube</b> – drag the dark background in any direction, as many full turns as you like. Flick for momentum, scroll or pinch to zoom, double-tap to reset the view.</li>
+        <li><b>Keyboard</b> – <kbd>U</kbd> <kbd>D</kbd> <kbd>L</kbd> <kbd>R</kbd> <kbd>F</kbd> <kbd>B</kbd> turn faces (hold <kbd>Shift</kbd> to reverse). <kbd>M</kbd> <kbd>E</kbd> <kbd>S</kbd> turn middle slices on odd sizes. Arrow keys spin the view.</li>
+        <li><kbd>Space</kbd> scramble · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo · <kbd>P</kbd> auto-spin · <kbd>Home</kbd> reset view</li>
+        <li><b>Algorithms</b> – open <i>Moves</i>, type a sequence like <code>R U R' U'</code> (or pick a preset) and press Run.</li>
+        <li><b>Timer</b> starts on your first move after a scramble and stops when you solve it. <b>Solve</b> replays your history backwards.</li>
+        <li>Your cube is saved automatically, so you can close the page and carry on later.</li>
       </ul>
       <button id="helpClose" class="btn primary">Got it</button>
     </div>
